@@ -1,0 +1,514 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Send, Image as ImageIcon, X, User, Lock, ShieldCheck, Crown, Users, CheckCircle, XCircle, Settings, AlertCircle } from 'lucide-react';
+
+const MASTER_TEACHER_PERSONA = `당신은 대한민국 최고의 '수석교사(Master Teacher)'입니다. 전공은 국어교육입니다.
+20년 이상의 풍부한 현장 교육 경험을 바탕으로, 동료 교사 및 후배 교사들의 든든한 멘토 역할을 수행합니다.
+특히 '2022 개정 교육과정'과 'IB 교육과정'의 최고 전문가로서 학생 주도성, 개념 기반 탐구 학습, 논서술형 평가 루브릭 등에 대해 깊이 있고 전문적인 조언을 제공합니다.
+
+[답변 가이드라인]
+- 톤앤매너: 후배 교사를 아끼고 격려하는 따뜻하고 부드러운 말투로 진지하고 전문적인 조언을 제공합니다. (예: "~선생님, 정말 고생이 많으시네요.")
+- 추상적인 이론보다는 실제 대한민국 학교 현장(초/중/고)에서 바로 써먹을 수 있는 구체적인 팁, 대화 스크립트, 예시 문안을 반드시 포함하세요.
+- 서류 양식이나 공문 작성을 요청받으면, 바로 복사해서 쓸 수 있는 수준의 초안을 제공하고 피드백해주세요.
+- 사용자가 문서(PDF 등)나 사진을 업로드하면, 해당 내용을 꼼꼼히 분석하여 피드백 및 수정본을 제안해주세요.
+- 마지막 한 문단은 교직 생활의 짠한 애환과 공감대가 녹아있는 해학과 위트, 유머러스한 내용으로 마무리하여 선생님께 웃음과 위로를 주세요.`;
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  
+  const [apiKey, setApiKey] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
+
+  const [regForm, setRegForm] = useState({ name: '', nickname: '', subject: '', school: '', secretCode: '' });
+  
+  const [pendingUsers, setPendingUsers] = useState([]);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedImageData, setSelectedImageData] = useState(null);
+  
+  const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isLoading]);
+
+  useEffect(() => {
+    try {
+      const storedApiKey = localStorage.getItem('gemini_api_key');
+      if (storedApiKey) setApiKey(storedApiKey);
+
+      const storedUser = localStorage.getItem('master_teacher_user');
+      if (storedUser) {
+        const parsedUser = JSON.parse(storedUser);
+        setUser(parsedUser);
+        setUserProfile(parsedUser);
+      } else {
+        setUser({ uid: 'temp' });
+        setUserProfile({ isNewUser: true });
+      }
+    } catch (error) {
+      console.error("Storage error:", error);
+      setUser({ uid: 'temp' });
+      setUserProfile({ isNewUser: true });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showAdminModal) {
+      const storedPending = localStorage.getItem('master_teacher_pending_users') || '[]';
+      setPendingUsers(JSON.parse(storedPending));
+    }
+  }, [showAdminModal]);
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 4 * 1024 * 1024) {
+      showToast("안정적인 전송을 위해 사진 크기는 4MB 이하로 업로드해주세요.");
+      return;
+    }
+
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target && typeof event.target.result === 'string') {
+          setSelectedImage(event.target.result);
+          const base64Data = event.target.result.split(',')[1];
+          setSelectedImageData({
+            inlineData: {
+              data: base64Data,
+              mimeType: file.type
+            }
+          });
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      showToast("이미지 파일만 업로드 가능합니다.");
+    }
+  };
+
+  const removeSelectedImage = () => {
+    setSelectedImage(null);
+    setSelectedImageData(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputText.trim() && !selectedImage) return;
+
+    if (!apiKey) {
+      showToast("설정(⚙️)에서 Gemini API 키를 먼저 입력해주세요.");
+      setShowSettings(true);
+      return;
+    }
+
+    const currentText = inputText;
+    const currentImg = selectedImage;
+    const currentImgData = selectedImageData;
+
+    setInputText("");
+    removeSelectedImage();
+    
+    const newUserMsg = { role: 'user', text: currentText, image: currentImg };
+    setMessages(prev => [...prev, newUserMsg]);
+    setIsLoading(true);
+
+    try {
+      let chatHistory = messages.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.text || "" }]
+      }));
+
+      const currentParts = [];
+      if (currentText) currentParts.push({ text: currentText });
+      if (currentImgData) currentParts.push(currentImgData);
+
+      chatHistory.push({ role: 'user', parts: currentParts });
+
+      const payload = {
+        contents: chatHistory,
+        systemInstruction: { parts: [{ text: MASTER_TEACHER_PERSONA }] }
+      };
+
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      const result = await response.json();
+
+      if (result.candidates && result.candidates.length > 0) {
+        const aiText = result.candidates[0].content.parts[0].text;
+        setMessages(prev => [...prev, { role: 'model', text: aiText }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'model', text: "시스템 오류: 응답 구조가 올바르지 않습니다. API 키가 유효한지 확인해주세요." }]);
+      }
+
+    } catch (error) {
+      console.error("AI Error:", error);
+      showToast("네트워크 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      setMessages(prev => [...prev, { role: 'model', text: "시스템 연결이 원활하지 않습니다. 인터넷 연결을 확인해주세요." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRegister = (e) => {
+    e.preventDefault();
+    if (!regForm.name || !regForm.school) {
+      showToast("이름과 학교명은 필수입니다.");
+      return;
+    }
+
+    let newProfile = { ...regForm, uid: Date.now().toString(), status: 'pending', role: 'user', isNewUser: false };
+    
+    if (regForm.secretCode === 'master2026') {
+      newProfile.status = 'approved';
+      newProfile.role = 'admin';
+      localStorage.setItem('master_teacher_user', JSON.stringify(newProfile));
+      setUser(newProfile);
+      setUserProfile(newProfile);
+      showToast("마스터 권한으로 즉시 승인되었습니다.");
+    } else {
+      const storedPending = JSON.parse(localStorage.getItem('master_teacher_pending_users') || '[]');
+      storedPending.push(newProfile);
+      localStorage.setItem('master_teacher_pending_users', JSON.stringify(storedPending));
+      
+      localStorage.setItem('master_teacher_user', JSON.stringify(newProfile));
+      setUser(newProfile);
+      setUserProfile(newProfile);
+    }
+  };
+
+  const handleApprove = (targetUid) => {
+    let storedPending = JSON.parse(localStorage.getItem('master_teacher_pending_users') || '[]');
+    const targetUser = storedPending.find(u => u.uid === targetUid);
+    if (targetUser) {
+      targetUser.status = 'approved';
+      storedPending = storedPending.filter(u => u.uid !== targetUid);
+      localStorage.setItem('master_teacher_pending_users', JSON.stringify(storedPending));
+      setPendingUsers(storedPending);
+      showToast(`${targetUser.name} 선생님을 승인했습니다.`);
+    }
+  };
+
+  const handleReject = (targetUid) => {
+    let storedPending = JSON.parse(localStorage.getItem('master_teacher_pending_users') || '[]');
+    storedPending = storedPending.filter(u => u.uid !== targetUid);
+    localStorage.setItem('master_teacher_pending_users', JSON.stringify(storedPending));
+    setPendingUsers(storedPending);
+    showToast("가입을 거절했습니다.");
+  };
+
+  if (!user || !userProfile) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-[#b2c7d9]">
+        <div className="text-center animate-pulse flex flex-col items-center">
+          <ShieldCheck className="w-12 h-12 text-white mb-4" />
+          <p className="text-white font-medium text-lg">시스템 접속 중...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (userProfile.isNewUser) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-gray-50 p-4 overflow-y-auto">
+        <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl max-w-md w-full border border-gray-100 my-auto">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-[#fee500] rounded-full flex items-center justify-center mx-auto mb-4 shadow-sm">
+              <User className="w-8 h-8 text-yellow-900" />
+            </div>
+            <h2 className="text-2xl font-bold text-gray-800">선생님, 환영합니다!</h2>
+            <p className="text-gray-500 text-sm mt-2">수석교사 AI와 대화하기 위해 가입을 신청해주세요.</p>
+          </div>
+          
+          <form onSubmit={handleRegister} className="space-y-4">
+            <input type="text" placeholder="성명 (실명)" value={regForm.name} onChange={e => setRegForm({...regForm, name: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#fee500] focus:border-[#fee500] outline-none transition-all" required />
+            <input type="text" placeholder="별명 (채팅방 표시용)" value={regForm.nickname} onChange={e => setRegForm({...regForm, nickname: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#fee500] focus:border-[#fee500] outline-none transition-all" />
+            <input type="text" placeholder="담당 교과 (예: 국어, 수학)" value={regForm.subject} onChange={e => setRegForm({...regForm, subject: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#fee500] focus:border-[#fee500] outline-none transition-all" />
+            <input type="text" placeholder="소속 학교명" value={regForm.school} onChange={e => setRegForm({...regForm, school: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#fee500] focus:border-[#fee500] outline-none transition-all" required />
+            
+            <div className="pt-4 border-t border-gray-100">
+              <input type="password" placeholder="마스터 코드 (관리자용 - 일반 가입자는 비워둠)" value={regForm.secretCode} onChange={e => setRegForm({...regForm, secretCode: e.target.value})} className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-gray-300 outline-none transition-all text-sm" />
+            </div>
+
+            <button type="submit" className="w-full bg-[#fee500] hover:bg-[#f4db00] text-yellow-900 font-bold py-3.5 rounded-xl transition-all shadow-sm mt-2">
+              가입 승인 요청하기
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (userProfile.status === 'pending') {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-gray-50 p-4">
+        <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl max-w-md w-full text-center border border-gray-100 relative overflow-hidden">
+          <div className="w-20 h-20 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Lock className="w-10 h-10 text-yellow-600" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">가입 승인 대기 중</h2>
+          <p className="text-gray-600 mb-6 leading-relaxed">
+            마스터 권한자의 승인이 필요합니다.<br/>조금만 기다려주세요!
+          </p>
+          <button 
+            onClick={() => {
+              localStorage.removeItem('master_teacher_user');
+              window.location.reload();
+            }}
+            className="text-sm text-gray-400 hover:text-gray-600 underline"
+          >
+            처음으로 돌아가기
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen w-full bg-[#b2c7d9] font-sans relative overflow-hidden">
+      
+      {toastMsg && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] bg-gray-800/95 text-white px-4 py-2.5 rounded-full shadow-lg flex items-center space-x-2 text-sm w-max max-w-[90vw] animate-pulse transition-all">
+          <AlertCircle className="w-4 h-4 flex-shrink-0 text-yellow-400" />
+          <span className="truncate">{toastMsg}</span>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="px-5 py-4 border-b flex justify-between items-center bg-gray-50">
+              <h3 className="text-lg font-bold flex items-center text-gray-800">
+                <Settings className="w-5 h-5 mr-2 text-gray-600"/> 
+                AI 환경 설정
+              </h3>
+              <button onClick={() => setShowSettings(false)} className="p-2 -mr-2 text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-6 h-6"/>
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">Gemini API 키 입력</label>
+                <input 
+                  type="password" 
+                  value={apiKey} 
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    localStorage.setItem('gemini_api_key', e.target.value);
+                  }} 
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-sm transition-all shadow-sm" 
+                  placeholder="AI Studio API 키를 붙여넣으세요" 
+                />
+                <p className="text-[13px] text-gray-500 mt-3 leading-relaxed bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  원활한 구동을 위해 구글 AI Studio에서 발급받은 API 키가 필요합니다.<br/>(키는 외부로 전송되지 않고 사용자의 기기에 안전하게 로컬 저장됩니다)
+                </p>
+              </div>
+              <button onClick={() => setShowSettings(false)} className="w-full py-3 bg-gray-800 text-white font-bold rounded-xl hover:bg-gray-900 transition-colors mt-2 shadow-sm">
+                저장하고 닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAdminModal && (
+        <div className="absolute inset-0 z-50 bg-black/60 flex items-center justify-center sm:p-4">
+          <div className="bg-white sm:rounded-2xl shadow-2xl w-full sm:max-w-2xl h-full sm:h-auto sm:max-h-[85vh] flex flex-col overflow-hidden">
+            <div className="px-4 sm:px-6 py-4 border-b flex justify-between items-center bg-gray-50">
+              <h3 className="text-lg font-bold flex items-center text-gray-800">
+                <Users className="w-5 h-5 mr-2 text-blue-600"/> 
+                가입 승인 대기 명단 ({pendingUsers.length}명)
+              </h3>
+              <button onClick={() => setShowAdminModal(false)} className="p-2 -mr-2 text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-6 h-6"/>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3 bg-gray-50">
+              {pendingUsers.length === 0 ? (
+                <div className="text-center py-10 text-gray-500">대기 중인 사용자가 없습니다.</div>
+              ) : (
+                pendingUsers.map(user => (
+                  <div key={user.uid} className="bg-white p-4 rounded-xl border border-gray-200 flex justify-between items-center shadow-sm">
+                    <div>
+                      <p className="font-bold text-gray-800">{user.name} <span className="text-sm font-normal text-gray-500">({user.nickname})</span></p>
+                      <p className="text-sm text-gray-600">{user.school} | {user.subject}</p>
+                    </div>
+                    <div className="flex space-x-2">
+                      <button onClick={() => handleApprove(user.uid)} className="p-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors font-semibold text-sm flex items-center">
+                        <CheckCircle className="w-4 h-4 mr-1" /> 승인
+                      </button>
+                      <button onClick={() => handleReject(user.uid)} className="p-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors font-semibold text-sm flex items-center">
+                        <XCircle className="w-4 h-4 mr-1" /> 거절
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {}
+      <header className="bg-[#b2c7d9] px-4 py-3 sm:py-4 flex items-center justify-between border-b border-black/5 z-10 shadow-sm shadow-black/5 flex-shrink-0">
+        <div className="flex items-center space-x-2 sm:space-x-3">
+          <div className="w-9 h-9 sm:w-10 sm:h-10 bg-white rounded-xl sm:rounded-2xl flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0">
+            <span className="text-xl sm:text-2xl">👨‍🏫</span>
+          </div>
+          <div className="truncate">
+            <h1 className="text-gray-800 font-bold text-base sm:text-lg leading-tight truncate">My Master-Teacher</h1>
+            <p className="text-black/50 text-[11px] sm:text-xs truncate">AI 수석교사 • 2022 개정, IB 전문가</p>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {userProfile.role === 'admin' && (
+            <button 
+              onClick={() => setShowAdminModal(true)}
+              className="flex items-center space-x-1 bg-white/40 hover:bg-white/60 px-2.5 py-1.5 rounded-full transition-all shadow-sm"
+            >
+              <Crown className="w-4 h-4 text-yellow-700" />
+              <span className="text-[13px] sm:text-sm font-bold text-gray-800 hidden sm:inline">관리자</span>
+              {pendingUsers.length > 0 && (
+                <span className="bg-red-500 text-white px-1.5 py-0.5 rounded-full text-[10px] sm:text-[11px] font-bold animate-pulse">
+                  {pendingUsers.length}
+                </span>
+              )}
+            </button>
+          )}
+          <button 
+            onClick={() => setShowSettings(true)}
+            className="p-2 bg-white/40 hover:bg-white/60 rounded-full transition-all shadow-sm flex-shrink-0 relative"
+          >
+            <Settings className="w-4 h-4 text-gray-700" />
+            {!apiKey && <span className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#b2c7d9]"></span>}
+          </button>
+        </div>
+      </header>
+
+      {}
+      <main className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
+        {messages.length === 0 && (
+          <div className="text-center my-6 sm:my-8 text-black/50 text-sm bg-black/5 mx-auto py-2 px-4 rounded-full w-max shadow-sm">
+            수석교사님과 대화를 시작해보세요.
+          </div>
+        )}
+
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}>
+            {msg.role !== 'user' && (
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white flex-shrink-0 flex items-center justify-center mr-2 shadow-sm">
+                <span className="text-lg sm:text-xl">👨‍🏫</span>
+              </div>
+            )}
+            
+            <div className={`max-w-[85%] sm:max-w-[75%] flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+              {msg.image && (
+                <div className="mb-1 rounded-2xl overflow-hidden border-2 border-black/5 shadow-sm max-w-[200px] sm:max-w-[250px]">
+                  <img src={msg.image} alt="uploaded" className="w-full h-auto object-cover" />
+                </div>
+              )}
+              
+              {msg.text && (
+                <div className={`px-3.5 sm:px-4 py-2.5 rounded-2xl shadow-sm text-[14px] sm:text-[15px] whitespace-pre-wrap leading-relaxed ${
+                  msg.role === 'user' 
+                    ? 'bg-[#fee500] text-gray-900 rounded-tr-sm' 
+                    : 'bg-white text-gray-800 rounded-tl-sm'
+                }`}>
+                  {msg.text}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {isLoading && (
+          <div className="flex justify-start mb-4">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-white flex-shrink-0 flex items-center justify-center mr-2 shadow-sm">
+              <span className="text-lg sm:text-xl">👨‍🏫</span>
+            </div>
+            <div className="bg-white px-4 py-3 rounded-2xl rounded-tl-sm shadow-sm flex items-center space-x-2">
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-75"></div>
+              <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-150"></div>
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </main>
+
+      {}
+      <footer className="bg-white px-3 sm:px-4 py-2 sm:py-3 flex flex-col border-t border-gray-200 flex-shrink-0 pb-4 sm:pb-6 shadow-[0_-2px_10px_rgba(0,0,0,0.02)]">
+        {selectedImage && (
+          <div className="mb-2 relative inline-block">
+            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border border-gray-200 shadow-sm relative group">
+              <img src={selectedImage} alt="preview" className="w-full h-full object-cover" />
+              <button onClick={removeSelectedImage} className="absolute top-1 right-1 bg-gray-900/70 p-1 rounded-full text-white hover:bg-red-500 transition-colors">
+                <X className="w-3 h-3 sm:w-4 sm:h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-end space-x-2 w-full">
+          <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageUpload} />
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2.5 sm:p-3 text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 rounded-xl transition-colors flex-shrink-0 shadow-sm border border-gray-200"
+          >
+            <ImageIcon className="w-5 h-5 sm:w-6 sm:h-6" />
+          </button>
+
+          <div className="flex-1 bg-gray-100 rounded-2xl flex items-end px-3 sm:px-4 py-1.5 focus-within:ring-2 focus-within:ring-[#fee500]/50 transition-all shadow-inner">
+            <textarea
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
+              placeholder="수석교사님에게 질문하기... (Shift+Enter 줄바꿈)"
+              className="w-full bg-transparent border-none focus:outline-none resize-none max-h-24 sm:max-h-32 py-2 text-[14px] sm:text-[15px] text-gray-800"
+              rows={1}
+              style={{ minHeight: '40px', height: inputText ? 'auto' : '40px' }}
+            />
+          </div>
+          
+          <button 
+            onClick={handleSendMessage}
+            disabled={(!inputText.trim() && !selectedImage) || isLoading}
+            className={`p-2.5 sm:p-3 rounded-xl flex-shrink-0 transition-all shadow-sm ${
+              (!inputText.trim() && !selectedImage) || isLoading 
+                ? 'bg-gray-200 text-gray-400' 
+                : 'bg-[#fee500] text-yellow-900 hover:bg-[#f4db00] active:scale-95'
+            }`}
+          >
+            <Send className="w-5 h-5 sm:w-6 sm:h-6 ml-0.5" />
+          </button>
+        </div>
+      </footer>
+    </div>
+  );
+}
